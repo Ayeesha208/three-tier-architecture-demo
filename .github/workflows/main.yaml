@@ -1,74 +1,110 @@
-name: Deploy to Azure VM
+name: Deploy Python App to Azure VM
 
 on:
   push:
     branches:
-      - main
+      - master
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v3
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-      - name: Set up SSH Key
+      # ✅ Generate SSH Key Pair
+      - name: Generate SSH Key Pair
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H 13.90.212.249 >> ~/.ssh/known_hosts
 
-      - name: Deploy to Azure VM
+      # ✅ Add Public Key to VM
+      - name: Add Public Key to VM
         run: |
-          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa azureuser@13.90.212.249 << 'EOF'
-          set -e
+          PUBLIC_KEY=$(cat ~/.ssh/id_rsa.pub)
+          az vm run-command invoke \
+            --resource-group test-rg \
+            --name test-vm \
+            --command-id RunShellScript \
+            --scripts "mkdir -p /home/azureuser/.ssh && echo \"$PUBLIC_KEY\" >> /home/azureuser/.ssh/authorized_keys && chmod 600 /home/azureuser/.ssh/authorized_keys && chown azureuser:azureuser /home/azureuser/.ssh/authorized_keys"
 
-          echo "✅ Updating system & installing dependencies..."
-          sudo apt update
-          sudo apt install -y python3 python3-pip python3-venv git ufw
+      # ✅ Get VM Public IP
+      - name: Get VM Public IP
+        run: |
+          ip=$(az vm list-ip-addresses \
+            --resource-group test-rg \
+            --name test-vm \
+            --query "[].virtualMachine.network.publicIpAddresses[0].ipAddress" \
+            --output tsv)
+          echo "VM Public IP: $ip"
+          echo "ip=$ip" >> $GITHUB_ENV
 
-          echo "✅ Cloning/Pulling Repository..."
-          mkdir -p ~/app
-          cd ~/app
-          if [ ! -d .git ]; then
-            git clone https://***@github.com/Ayeesha208/three-tier-architecture-demo.git .
-          else
-            git pull origin main
-          fi
+      # ✅ Verify SSH Connection
+      - name: Verify SSH Connection
+        run: ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa azureuser@${{ env.ip }} "echo SSH Connection Successful"
 
-          echo "✅ Setting up Python environment..."
-          python3 -m venv venv
-          source venv/bin/activate
-          pip install --upgrade pip
-          pip install gunicorn flask
+      # ✅ Install Dependencies and Deploy App
+      - name: Install Dependencies and Deploy App
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa azureuser@${{ env.ip }} << 'EOF'
+            set -e
 
-          echo "✅ Configuring systemd service..."
-          sudo bash -c 'cat > /etc/systemd/system/myapp.service <<EOF2
-          [Unit]
-          Description=Gunicorn instance to serve my Python app
-          After=network.target
+            # ✅ Update & Install Required Packages
+            sudo apt update
+            sudo apt install -y python3 python3-pip python3-venv git ufw
 
-          [Service]
-          User=azureuser
-          Group=www-data
-          WorkingDirectory=/home/azureuser/app
-          ExecStart=/home/azureuser/app/venv/bin/gunicorn --workers 3 --bind 0.0.0.0:5000 app:app
-          Restart=always
+            # ✅ Ensure App Directory Exists
+            mkdir -p ~/app
+            cd ~/app
 
-          [Install]
-          WantedBy=multi-user.target
-          EOF2'
+            # ✅ Handle First-Time Deployment & Updates
+            if [ ! -d .git ]; then
+              echo "First-time setup: Cloning repository..."
+              git clone https://${{ secrets.TOKEN_GITHUB }}@github.com/Ayeesha208/three-tier-architecture-demo.git .
+            else
+              echo "Repository exists: Pulling latest changes..."
+              git pull origin main
+            fi
 
-          echo "✅ Restarting service..."
-          sudo systemctl daemon-reload
-          sudo systemctl enable myapp.service
-          sudo systemctl restart myapp.service
+            # ✅ Create Virtual Environment & Install Dependencies
+            python3 -m venv venv
+            source venv/bin/activate
+            pip install --upgrade pip
+            pip install gunicorn flask
 
-          echo "✅ Opening port 5000..."
-          sudo ufw allow 5000/tcp
-          sudo ufw reload
+            # ✅ Fix systemd Service File
+            sudo bash -c 'cat > /etc/systemd/system/myapp.service <<EOF2
+            [Unit]
+            Description=Gunicorn instance to serve my Python app
+            After=network.target
 
-          echo "✅ Deployment Complete!"
+            [Service]
+            User=azureuser
+            Group=www-data
+            WorkingDirectory=/home/azureuser/app
+            ExecStart=/home/azureuser/app/venv/bin/gunicorn --workers 3 --bind 0.0.0.0:5000 app:app
+            Restart=always
+
+            [Install]
+            WantedBy=multi-user.target
+            EOF2'
+
+            # ✅ Reload & Restart Service
+            sudo systemctl daemon-reload
+            sudo systemctl enable myapp.service
+            sudo systemctl restart myapp.service
+
+            # ✅ Open Port 5000
+            sudo ufw allow 5000/tcp
+            sudo ufw reload
+          EOF
+
+      # ✅ Verify Deployment
+      - name: Verify Deployment
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa azureuser@${{ env.ip }} << 'EOF'
+            sleep 5  # Wait for Gunicorn to start
+            curl -I http://localhost:5000 || echo "Application is not responding"
+            sudo systemctl status myapp.service || echo "myapp.service failed to start"
           EOF
