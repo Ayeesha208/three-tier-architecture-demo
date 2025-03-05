@@ -42,15 +42,15 @@ jobs:
 
       # ✅ Ensure Resource Group Exists
       - name: Ensure Resource Group Exists
-        run: az group create --name demo-rg --location eastus --output none || true
+        run: az group create --name test-rg --location eastus --output none || true
 
       # ✅ Ensure Virtual Machine Exists
       - name: Ensure Virtual Machine Exists
         run: |
-          if ! az vm show --resource-group demo-rg --name demo-vm --query 'name' --output tsv; then
+          if ! az vm show --resource-group test-rg --name test-vm --query 'name' --output tsv; then
             az vm create \
-              --resource-group demo-rg \
-              --name demo-vm \
+              --resource-group test-rg \
+              --name test-vm \
               --image Ubuntu2204 \
               --admin-username azureuser \
               --public-ip-sku Standard \
@@ -62,8 +62,8 @@ jobs:
       - name: Get VM Public IP
         run: |
           ip=$(az vm list-ip-addresses \
-            --resource-group demo-rg \
-            --name demo-vm \
+            --resource-group test-rg \
+            --name test-vm \
             --query "[].virtualMachine.network.publicIpAddresses[0].ipAddress" \
             --output tsv)
           echo "VM Public IP: $ip"
@@ -85,8 +85,8 @@ jobs:
         run: |
           PUBLIC_KEY=$(cat ~/.ssh/id_rsa.pub)
           az vm run-command invoke \
-            --resource-group demo-rg \
-            --name demo-vm \
+            --resource-group test-rg \
+            --name test-vm \
             --command-id RunShellScript \
             --scripts "mkdir -p /home/azureuser/.ssh && echo \"$PUBLIC_KEY\" >> /home/azureuser/.ssh/authorized_keys && chmod 600 /home/azureuser/.ssh/authorized_keys && chown azureuser:azureuser /home/azureuser/.ssh/authorized_keys"
 
