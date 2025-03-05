@@ -1,4 +1,3 @@
-
 name: Deploy Python App to Azure VM
 
 on:
@@ -120,18 +119,40 @@ jobs:
             python3 -m venv venv
             source venv/bin/activate
             pip install --upgrade pip
+            pip install gunicorn
             pip install -r requirements.txt
 
-            # ✅ Kill Existing Gunicorn Process (If Running)
-            sudo pkill -f gunicorn || true
+            # ✅ Create systemd Service for Gunicorn (Running on Port 5000)
+            sudo bash -c 'cat > /etc/systemd/system/myapp.service <<EOF2
+            [Unit]
+            Description=Gunicorn instance to serve my Python app
+            After=network.target
+
+            [Service]
+            User=azureuser
+            Group=www-data
+            WorkingDirectory=/home/azureuser/app
+            ExecStart=/home/azureuser/app/venv/bin/gunicorn --workers 3 --bind 0.0.0.0:5000 app:app
+            Restart=always
+
+            [Install]
+            WantedBy=multi-user.target
+            EOF2'
+
+            # ✅ Reload & Start Service
+            sudo systemctl daemon-reload
+            sudo systemctl enable myapp.service
+            sudo systemctl restart myapp.service
 
             # ✅ Ensure Port 5000 is Open
             sudo ufw allow 5000 || true
-
-            # ✅ Restart Application
-            nohup gunicorn --workers 3 --bind 0.0.0.0:5000 app:app &
-
-            # ✅ Restart Systemd Service (if configured)
-            sudo systemctl restart myapp.service || true
           EOF
 
+      # ✅ Verify Application Deployment
+      - name: Verify Deployment
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa azureuser@${{ env.ip }} << 'EOF'
+            sleep 5  # Wait for Gunicorn to start
+            curl -I http://localhost:5000 || echo "Application is not responding"
+            sudo systemctl status myapp.service || echo "myapp.service failed to start"
+          EOF
