@@ -125,11 +125,11 @@ jobs:
             # ✅ Kill Existing Gunicorn Process (If Running)
             sudo pkill -f gunicorn || true
 
-            # ✅ Ensure Port 8000 is Open
-            sudo ufw allow 8000 || true
+            # ✅ Ensure Port 5000 is Open
+            sudo ufw allow 5000 || true
 
             # ✅ Restart Application
-            nohup gunicorn --workers 3 --bind 0.0.0.0:8000 app:app &
+            nohup gunicorn --workers 3 --bind 0.0.0.0:5000 app:app &
 
             # ✅ Restart Systemd Service (if configured)
             sudo systemctl restart myapp.service || true
