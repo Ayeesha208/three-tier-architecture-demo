@@ -18,6 +18,7 @@ jobs:
           mkdir -p ~/.ssh
           ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""
           chmod 600 ~/.ssh/id_rsa
+          cp ~/.ssh/id_rsa.pub ~/.ssh/id_rsa.pub.backup
 
       # ✅ Upload SSH Key as Artifact
       - name: Upload SSH Key as Artifact
@@ -30,22 +31,16 @@ jobs:
       - name: Login to Azure
         uses: azure/login@v1
         with:
-          creds: >
-            {
-              "clientId":"${{ secrets.AZURE_CLIENT_ID }}",
-              "clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}",
-              "tenantId":"${{ secrets.AZURE_TENANT_ID }}",
-              "subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}"
-            }
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       # ✅ Ensure Resource Group Exists
       - name: Ensure Resource Group Exists
-        run: az group create --name test-rg --location eastus --output none || true
+        run: az group create --name test-rg --location eastus --output none
 
       # ✅ Ensure Virtual Machine Exists
       - name: Ensure Virtual Machine Exists
         run: |
-          if ! az vm show --resource-group test-rg --name test-vm --query 'name' --output tsv; then
+          if ! az vm show --resource-group test-rg --name test-vm --query 'name' --output tsv 2>/dev/null; then
             az vm create \
               --resource-group test-rg \
               --name test-vm \
@@ -53,6 +48,7 @@ jobs:
               --admin-username azureuser \
               --public-ip-sku Standard \
               --size Standard_B2s \
+              --generate-ssh-keys \
               --output none
           fi
 
@@ -78,10 +74,10 @@ jobs:
       - name: Set Correct Permissions for SSH Key
         run: chmod 600 ~/.ssh/id_rsa
 
-      # ✅ Manually Add SSH Public Key to VM
-      - name: Manually Add SSH Public Key to VM
+      # ✅ Add SSH Public Key to VM
+      - name: Add SSH Public Key to VM
         run: |
-          PUBLIC_KEY=$(cat ~/.ssh/id_rsa.pub)
+          PUBLIC_KEY=$(cat ~/.ssh/id_rsa.pub.backup)
           az vm run-command invoke \
             --resource-group test-rg \
             --name test-vm \
@@ -109,7 +105,7 @@ jobs:
             # ✅ Handle First-Time Deployment & Updates
             if [ ! -d .git ]; then
               echo "First-time setup: Cloning repository..."
-              git clone https://${{ secrets.TOKEN_GITHUB }}@github.com/Ayeesha208/three-tier-architecture-demo.git .
+              git clone https://${{ secrets.GITHUB_TOKEN }}@github.com/Ayeesha208/three-tier-architecture-demo.git .
             else
               echo "Repository exists: Pulling latest changes..."
               git pull origin main
@@ -121,10 +117,7 @@ jobs:
             pip install --upgrade pip
             pip install gunicorn flask  # Ensure Flask is installed
 
-            # ✅ Also Install Gunicorn Globally (Failsafe)
-            sudo pip3 install gunicorn flask
-
-            # ✅ Create systemd Service for Gunicorn (Running on Port 5000)
+            # ✅ Create systemd Service for Gunicorn (Port 5000)
             sudo bash -c 'cat > /etc/systemd/system/myapp.service <<EOF2
             [Unit]
             Description=Gunicorn instance to serve my Python app
@@ -132,9 +125,8 @@ jobs:
 
             [Service]
             User=azureuser
-            Group=www-data
             WorkingDirectory=/home/azureuser/app
-            ExecStart=/bin/bash -c "source /home/azureuser/app/venv/bin/activate && exec gunicorn --workers 3 --bind 0.0.0.0:5000 app:app"
+            ExecStart=/home/azureuser/app/venv/bin/gunicorn --workers 3 --bind 0.0.0.0:5000 app:app
             Restart=always
 
             [Install]
