@@ -19,7 +19,7 @@ jobs:
           ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""
           chmod 600 ~/.ssh/id_rsa
 
-      # ✅ Upload SSH Key
+      # ✅ Upload SSH Key as Artifact
       - name: Upload SSH Key as Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -119,8 +119,10 @@ jobs:
             python3 -m venv venv
             source venv/bin/activate
             pip install --upgrade pip
-            pip install gunicorn
-          # pip install -r requirements.txt
+            pip install gunicorn flask  # Ensure Flask is installed
+
+            # ✅ Also Install Gunicorn Globally (Failsafe)
+            sudo pip3 install gunicorn flask
 
             # ✅ Create systemd Service for Gunicorn (Running on Port 5000)
             sudo bash -c 'cat > /etc/systemd/system/myapp.service <<EOF2
@@ -132,7 +134,7 @@ jobs:
             User=azureuser
             Group=www-data
             WorkingDirectory=/home/azureuser/app
-            ExecStart=/home/azureuser/app/venv/bin/gunicorn --workers 3 --bind 0.0.0.0:5000 app:app
+            ExecStart=/bin/bash -c "source /home/azureuser/app/venv/bin/activate && exec gunicorn --workers 3 --bind 0.0.0.0:5000 app:app"
             Restart=always
 
             [Install]
