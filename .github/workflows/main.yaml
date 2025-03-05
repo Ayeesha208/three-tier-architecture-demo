@@ -1,7 +1,6 @@
 
 name: Deploy Python App to Azure VM
 
-
 on:
   push:
     branches:
