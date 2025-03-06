@@ -1,79 +1,160 @@
-name: Deploy Flask App to Azure VM
-
+name: Deploy Python App to Azure VM
+ 
 on:
   push:
     branches:
-      - main
-
+      - master
+ 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v3
-
-      - name: Set up SSH
+      - name: Checkout Code
+        uses: actions/checkout@v4
+ 
+      # ✅ Generate SSH Key Pair
+      - name: Generate SSH Key Pair
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.AZURE_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ secrets.AZURE_VM_IP }} >> ~/.ssh/known_hosts
-
-      - name: Deploy to Azure VM
+ 
+      # ✅ Upload SSH Key as Artifact
+      - name: Upload SSH Key as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssh-key
+          path: ~/.ssh/id_rsa
+ 
+      # ✅ Login to Azure
+      - name: Login to Azure
+        uses: azure/login@v1
+        with:
+          creds: >
+            {
+              "clientId":"${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}",
+              "tenantId":"${{ secrets.AZURE_TENANT_ID }}",
+              "subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+            }
+ 
+      # ✅ Ensure Resource Group Exists
+      - name: Ensure Resource Group Exists
+        run: az group create --name test-rg --location eastus --output none || true
+ 
+      # ✅ Ensure Virtual Machine Exists
+      - name: Ensure Virtual Machine Exists
         run: |
-          ssh ubuntu@${{ secrets.AZURE_VM_IP }} << 'EOF'
-            set -e  # Exit if any command fails
-
-            # Ensure dependencies are installed
+          if ! az vm show --resource-group test-rg --name test-vm --query 'name' --output tsv; then
+            az vm create \
+              --resource-group test-rg \
+              --name test-vm \
+              --image Ubuntu2204 \
+              --admin-username azureuser \
+              --public-ip-sku Standard \
+              --size Standard_B2s \
+              --output none
+          fi
+ 
+      # ✅ Get VM Public IP
+      - name: Get VM Public IP
+        run: |
+          ip=$(az vm list-ip-addresses \
+            --resource-group test-rg \
+            --name test-vm \
+            --query "[].virtualMachine.network.publicIpAddresses[0].ipAddress" \
+            --output tsv)
+          echo "VM Public IP: $ip"
+          echo "ip=$ip" >> $GITHUB_ENV
+ 
+      # ✅ Download SSH Key from Artifact
+      - name: Download SSH Key from Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ssh-key
+          path: ~/.ssh
+ 
+      # ✅ Set Correct Permissions for SSH Key
+      - name: Set Correct Permissions for SSH Key
+        run: chmod 600 ~/.ssh/id_rsa
+ 
+      # ✅ Manually Add SSH Public Key to VM
+      - name: Manually Add SSH Public Key to VM
+        run: |
+          PUBLIC_KEY=$(cat ~/.ssh/id_rsa.pub)
+          az vm run-command invoke \
+            --resource-group test-rg \
+            --name test-vm \
+            --command-id RunShellScript \
+            --scripts "mkdir -p /home/azureuser/.ssh && echo \"$PUBLIC_KEY\" >> /home/azureuser/.ssh/authorized_keys && chmod 600 /home/azureuser/.ssh/authorized_keys && chown azureuser:azureuser /home/azureuser/.ssh/authorized_keys"
+ 
+      # ✅ Verify SSH Connection
+      - name: Verify SSH Connection
+        run: ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa azureuser@${{ env.ip }} "echo SSH Connection Successful"
+ 
+      # ✅ Install Dependencies and Deploy App
+      - name: Install Dependencies and Deploy App
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa azureuser@${{ env.ip }} << 'EOF'
+            set -e
+ 
+            # ✅ Update & Install Required Packages
             sudo apt update
-            sudo apt install -y python3 python3-pip git
-
-            # Ensure App Directory Exists
+            sudo apt install -y python3 python3-pip python3-venv git
+ 
+            # ✅ Ensure App Directory Exists
             mkdir -p ~/app
             cd ~/app
-
-            # Handle First-Time Deployment & Updates
+ 
+            # ✅ Handle First-Time Deployment & Updates
             if [ ! -d .git ]; then
-                echo "First-time setup: Cloning repository..."
-                git clone https://${{ secrets.TOKEN_GITHUB }}@github.com/Ayeesha208/three-tier-architecture-demo.git .
+              echo "First-time setup: Cloning repository..."
+              git clone https://${{ secrets.TOKEN_GITHUB }}@github.com/Ayeesha208/three-tier-architecture-demo.git .
             else
-                echo "Repository exists: Pulling latest changes..."
-                git pull origin main
+              echo "Repository exists: Pulling latest changes..."
+              git pull origin main
             fi
-
-            # Ensure Virtual Environment Exists
-            if [ ! -d venv ]; then
-                python3 -m venv venv
-            fi
+ 
+            # ✅ Create Virtual Environment & Install Dependencies
+            python3 -m venv venv
             source venv/bin/activate
-
-            # Install Dependencies
             pip install --upgrade pip
-            pip install flask
-
-            # Ensure app.py exists (Fixed Syntax)
-            if [ ! -f app.py ]; then
-                cat > app.py <<EOPYTHON
-from flask import Flask
-
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Hello from Flask on Azure VM!"
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
-EOPYTHON
-            fi
-
-            # Kill any existing Flask processes
-            pkill -f "python3 app.py" || true
-
-            # Run the Flask App
-            echo "Starting Flask App..."
-            nohup python3 app.py > app.log 2>&1 &
-            disown
-            echo "Deployment completed successfully!"
+            pip install gunicorn flask  # Ensure Flask is installed
+ 
+            # ✅ Also Install Gunicorn Globally (Failsafe)
+            sudo pip3 install gunicorn flask
+ 
+            # ✅ Create systemd Service for Gunicorn (Running on Port 5000)
+            sudo bash -c 'cat > /etc/systemd/system/myapp.service <<EOF2
+            [Unit]
+            Description=Gunicorn instance to serve my Python app
+            After=network.target
+ 
+            [Service]
+            User=azureuser
+            Group=www-data
+            WorkingDirectory=/home/azureuser/app
+            ExecStart=/bin/bash -c "source /home/azureuser/app/venv/bin/activate && exec gunicorn --workers 3 --bind 0.0.0.0:5000 app:app"
+            Restart=always
+ 
+            [Install]
+            WantedBy=multi-user.target
+            EOF2'
+ 
+            # ✅ Reload & Start Service
+            sudo systemctl daemon-reload
+            sudo systemctl enable myapp.service
+            sudo systemctl restart myapp.service
+ 
+            # ✅ Ensure Port 5000 is Open
+            sudo ufw allow 5000 || true
+          EOF
+ 
+      # ✅ Verify Application Deployment
+      - name: Verify Deployment
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa azureuser@${{ env.ip }} << 'EOF'
+            sleep 5  # Wait for Gunicorn to start
+            curl -I http://localhost:5000 || echo "Application is not responding"
+            sudo systemctl status myapp.service || echo "myapp.service failed to start"
           EOF
