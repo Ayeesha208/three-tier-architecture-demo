@@ -1,4 +1,4 @@
-name: Deploy Python App to Azure VM
+name: Deploy Three-Tier App to Azure VM
 
 on:
   push:
@@ -12,14 +12,13 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # ✅ Generate SSH Key Pair
-      - name: Generate SSH Key Pair
+      # ✅ Ensure SSH Key is Available
+      - name: Setup SSH Key
         run: |
           mkdir -p ~/.ssh
           ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""
           chmod 600 ~/.ssh/id_rsa
 
-      # ✅ Upload SSH Key as Artifact
       - name: Upload SSH Key as Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -38,7 +37,7 @@ jobs:
               "subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}"
             }
 
-      # ✅ Ensure VM Exists & Get Public IP
+      # ✅ Get Public IP of VM
       - name: Get VM Public IP
         run: |
           ip=$(az vm list-ip-addresses \
@@ -46,22 +45,20 @@ jobs:
             --name test-vm \
             --query "[].virtualMachine.network.publicIpAddresses[0].ipAddress" \
             --output tsv)
-          echo "VM Public IP: $ip"
           echo "ip=$ip" >> $GITHUB_ENV
 
-      # ✅ Download SSH Key from Artifact
-      - name: Download SSH Key from Artifact
+      # ✅ Download SSH Key
+      - name: Download SSH Key
         uses: actions/download-artifact@v4
         with:
           name: ssh-key
           path: ~/.ssh
 
-      # ✅ Set Correct Permissions for SSH Key
-      - name: Set Correct Permissions for SSH Key
+      - name: Set Correct SSH Key Permissions
         run: chmod 600 ~/.ssh/id_rsa
 
-      # ✅ Manually Add SSH Public Key to VM
-      - name: Manually Add SSH Public Key to VM
+      # ✅ Add SSH Key to VM
+      - name: Add SSH Key to VM
         run: |
           PUBLIC_KEY=$(cat ~/.ssh/id_rsa.pub)
           az vm run-command invoke \
@@ -74,20 +71,23 @@ jobs:
       - name: Verify SSH Connection
         run: ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa azureuser@${{ env.ip }} "echo SSH Connection Successful"
 
-      # ✅ Deploy App to Azure VM
-      - name: Install Dependencies and Deploy App
+      # ✅ Deploy Dockerized App to Azure VM
+      - name: Deploy Three-Tier App
         run: |
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa azureuser@${{ env.ip }} << 'EOF'
             set -e
 
             # ✅ Update System & Install Dependencies
-            sudo apt update && sudo apt install -y python3 python3-pip python3-venv git curl ufw
+            sudo apt update && sudo apt install -y docker.io docker-compose git ufw
 
-            # ✅ Ensure App Directory Exists
+            # ✅ Ensure User is in Docker Group
+            sudo usermod -aG docker azureuser
+            newgrp docker
+
+            # ✅ Clone or Update the Repository
             mkdir -p ~/app
             cd ~/app
 
-            # ✅ Clone Repository or Pull Latest Changes
             if [ ! -d .git ]; then
               echo "Cloning repository..."
               git clone https://${{ secrets.TOKEN_GITHUB }}@github.com/Ayeesha208/three-tier-architecture-demo.git .
@@ -97,56 +97,42 @@ jobs:
               git pull origin master
             fi
 
-            # ✅ Ensure requirements.txt Exists
-            if [ ! -f requirements.txt ]; then
-              echo "ERROR: requirements.txt not found!" >&2
-              exit 1
-            fi
-
-            # ✅ Create Virtual Environment & Install Dependencies
-            python3 -m venv venv
-            source venv/bin/activate
-            pip install --upgrade pip
-            pip install -r requirements.txt  
-
-            # ✅ Also Install Gunicorn Globally (Failsafe)
-            sudo pip3 install gunicorn flask
-
-            # ✅ Create systemd Service File
+            # ✅ Create systemd Service for Docker Compose
             sudo bash -c 'cat > /etc/systemd/system/myapp.service <<EOF2
             [Unit]
-            Description=Gunicorn instance to serve my Python app
+            Description=Three-Tier App using Docker Compose
             After=network.target
 
             [Service]
             User=azureuser
-            Group=www-data
             WorkingDirectory=/home/azureuser/app
-            ExecStart=/home/azureuser/app/venv/bin/gunicorn --workers 3 --bind 0.0.0.0:5000 app:app
+            ExecStart=/usr/bin/docker compose up -d
+            ExecStop=/usr/bin/docker compose down
             Restart=always
 
             [Install]
             WantedBy=multi-user.target
             EOF2'
 
-            # ✅ Reload & Start Gunicorn Service
+            # ✅ Reload & Start the Service
             sudo systemctl daemon-reload
             sudo systemctl enable myapp.service
             sudo systemctl restart myapp.service
 
-            # ✅ Open Port 5000 for Flask
-            sudo ufw allow 5000 || true
+            # ✅ Open Required Ports
+            sudo ufw allow 8080  # Web App
+            sudo ufw allow 5000  # Backend (if needed)
+            sudo ufw reload
 
-            # ✅ Check Gunicorn Logs if it Fails
-            sudo journalctl -u myapp.service --no-pager | tail -20 || true
+            # ✅ Check Running Containers
+            docker compose ps
           EOF
 
       # ✅ Verify Deployment
       - name: Verify Deployment
         run: |
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa azureuser@${{ env.ip }} << 'EOF'
-            sleep 5  # Wait for Gunicorn to start
-            curl -I http://localhost:5000 || echo "Application is not responding"
+            sleep 5  # Wait for the app to start
+            curl -I http://localhost:8080 || echo "Web App is not responding"
             sudo systemctl status myapp.service || echo "myapp.service failed to start"
           EOF
-          
