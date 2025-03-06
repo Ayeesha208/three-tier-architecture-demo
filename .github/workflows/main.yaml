@@ -149,3 +149,4 @@ jobs:
             curl -I http://localhost:5000 || echo "Application is not responding"
             sudo systemctl status myapp.service || echo "myapp.service failed to start"
           EOF
+          
