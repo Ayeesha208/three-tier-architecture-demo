@@ -82,7 +82,7 @@ jobs:
 
             # ✅ Ensure User is in Docker Group
             sudo usermod -aG docker azureuser
-            newgrp docker
+            sudo systemctl restart docker
 
             # ✅ Clone or Update the Repository
             mkdir -p ~/app
@@ -106,7 +106,7 @@ jobs:
             [Service]
             User=azureuser
             WorkingDirectory=/home/azureuser/app
-            ExecStart=/usr/bin/docker-compose up -d
+            ExecStart=/usr/bin/docker-compose -f docker-compose.yml up -d
             ExecStop=/usr/bin/docker-compose down
             Restart=always
 
@@ -120,8 +120,8 @@ jobs:
             sudo systemctl restart myapp.service
 
             # ✅ Open Required Ports
-            sudo ufw allow 8080  # Web App
-            sudo ufw allow 5000  # Backend (if needed)
+            sudo ufw allow 8080/tcp  # Web App
+            sudo ufw allow 5000/tcp  # Backend (if needed)
             sudo ufw reload
 
             # ✅ Check Running Containers
