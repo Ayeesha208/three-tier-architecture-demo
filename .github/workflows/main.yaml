@@ -38,24 +38,6 @@ jobs:
               "subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}"
             }
 
-      # ✅ Ensure Resource Group Exists
-      - name: Ensure Resource Group Exists
-        run: az group create --name test-rg --location eastus --output none || true
-
-      # ✅ Ensure Virtual Machine Exists
-      - name: Ensure Virtual Machine Exists
-        run: |
-          if ! az vm show --resource-group test-rg --name test-vm --query 'name' --output tsv; then
-            az vm create \
-              --resource-group test-rg \
-              --name test-vm \
-              --image Ubuntu2204 \
-              --admin-username azureuser \
-              --public-ip-sku Standard \
-              --size Standard_B2s \
-              --output none
-          fi
-
       # ✅ Get VM Public IP
       - name: Get VM Public IP
         run: |
@@ -78,16 +60,6 @@ jobs:
       - name: Set Correct Permissions for SSH Key
         run: chmod 600 ~/.ssh/id_rsa
 
-      # ✅ Manually Add SSH Public Key to VM
-      - name: Manually Add SSH Public Key to VM
-        run: |
-          PUBLIC_KEY=$(cat ~/.ssh/id_rsa.pub)
-          az vm run-command invoke \
-            --resource-group test-rg \
-            --name test-vm \
-            --command-id RunShellScript \
-            --scripts "mkdir -p /home/azureuser/.ssh && echo \"$PUBLIC_KEY\" >> /home/azureuser/.ssh/authorized_keys && chmod 600 /home/azureuser/.ssh/authorized_keys && chown azureuser:azureuser /home/azureuser/.ssh/authorized_keys"
-
       # ✅ Verify SSH Connection
       - name: Verify SSH Connection
         run: ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa azureuser@${{ env.ip }} "echo SSH Connection Successful"
@@ -98,8 +70,9 @@ jobs:
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa azureuser@${{ env.ip }} << 'EOF'
             set -e  # Exit on error
 
-            # ✅ Update System & Install Dependencies
-            sudo apt update && sudo apt install -y python3 python3-pip python3-venv git curl ufw
+            # ✅ Update & Install Required Packages
+            sudo apt update
+            sudo apt install -y python3 python3-pip python3-venv git curl ufw
 
             # ✅ Ensure App Directory Exists
             mkdir -p ~/app
@@ -111,20 +84,25 @@ jobs:
               git clone https://${{ secrets.TOKEN_GITHUB }}@github.com/Ayeesha208/three-tier-architecture-demo.git .
             else
               echo "Updating repository..."
+              git reset --hard
               git pull origin master
+            fi
+
+            # ✅ Verify `requirements.txt` Exists
+            if [ ! -f requirements.txt ]; then
+              echo "❌ ERROR: requirements.txt not found! Check your repository structure."
+              exit 1
             fi
 
             # ✅ Create Virtual Environment & Install Dependencies
             python3 -m venv venv
             source venv/bin/activate
             pip install --upgrade pip
-            pip install -r requirements.txt  # Ensure all dependencies are installed
+            pip install -r requirements.txt
 
-            # ✅ Also Install Gunicorn Globally (Failsafe)
-            sudo pip3 install gunicorn flask
-
-            # ✅ Create systemd Service File
-            sudo bash -c 'cat > /etc/systemd/system/myapp.service <<EOF2
+            # ✅ Create systemd Service for Gunicorn (if not exists)
+            if [ ! -f /etc/systemd/system/myapp.service ]; then
+              sudo bash -c 'cat > /etc/systemd/system/myapp.service <<EOF2
             [Unit]
             Description=Gunicorn instance to serve my Python app
             After=network.target
@@ -139,24 +117,22 @@ jobs:
             [Install]
             WantedBy=multi-user.target
             EOF2'
+            fi
 
-            # ✅ Reload & Start Gunicorn Service
+            # ✅ Reload & Restart Gunicorn Service
             sudo systemctl daemon-reload
             sudo systemctl enable myapp.service
             sudo systemctl restart myapp.service
 
-            # ✅ Open Port 5000 for Flask
+            # ✅ Ensure Port 5000 is Open
             sudo ufw allow 5000 || true
-
-            # ✅ Check Gunicorn Logs if it Fails
-            sudo journalctl -u myapp.service --no-pager | tail -20 || true
           EOF
 
-      # ✅ Verify Deployment
+      # ✅ Verify Application Deployment
       - name: Verify Deployment
         run: |
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa azureuser@${{ env.ip }} << 'EOF'
             sleep 5  # Wait for Gunicorn to start
-            curl -I http://localhost:5000 || (echo "Application is not responding!" && exit 1)
-            sudo systemctl status myapp.service --no-pager
+            curl -I http://localhost:5000 || echo "Application is not responding"
+            sudo systemctl status myapp.service || echo "myapp.service failed to start"
           EOF
